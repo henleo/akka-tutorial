@@ -1,6 +1,7 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -19,7 +20,11 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	public static final String DEFAULT_NAME = "largeMessageProxy";
 	
 	public static Props props() {
-		return Props.create(LargeMessageProxy.class);
+		return Props.create(LargeMessageProxy.class, () -> new LargeMessageProxy());
+	}
+
+	public LargeMessageProxy(){
+		this.messageReceivedSoFar = new ArrayList<Byte>();
 	}
 
 	////////////////////
@@ -41,9 +46,31 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		private ActorRef receiver;
 	}
 	
+	enum Ack {
+	INSTANCE;
+	}
+
+	static class StreamInitialized {}
+
+	static class StreamCompleted {}
+
+	static class StreamFailure {
+	private final Throwable cause;
+
+	public StreamFailure(Throwable cause) {
+		this.cause = cause;
+	}
+
+	public Throwable getCause() {
+		return cause;
+	}
+	}
+
 	/////////////////
 	// Actor State //
 	/////////////////
+
+	ArrayList<Byte> messageReceivedSoFar;
 	
 	/////////////////////
 	// Actor Lifecycle //
@@ -58,6 +85,39 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		return receiveBuilder()
 				.match(LargeMessage.class, this::handle)
 				.match(BytesMessage.class, this::handle)
+				.match(
+					StreamInitialized.class,
+					init -> {
+					log().info("Stream initialized");
+					sender().tell(Ack.INSTANCE, self());
+					//TODO: create new datastructure to collect elements in
+					this.messageReceivedSoFar.clear();
+					})
+				.match(
+					Byte.class,
+					element -> {
+					log().info("Received element: {}", element);
+					sender().tell(Ack.INSTANCE, self());
+					//TODO: put elements back together
+					this.messageReceivedSoFar.add(element);
+					})
+				.match(
+					StreamCompleted.class,
+					completed -> {
+					log().info("Stream completed");
+					//TODO: deserialize message
+					Byte[] completeMessage = new Byte[this.messageReceivedSoFar.size()];
+					completeMessage = this.messageReceivedSoFar.toArray(completeMessage);
+					KryoPool kryo = KryoPoolSingleton.get();
+					BytesMessage<?> deserializedMessage = kryo.fromBytes(completeMessage);
+					//TODO: send to receiver
+					deserializedMessage.getReceiver().tell(deserializedMessage.getBytes(), deserializedMessage.getSender());
+					})
+				.match(
+					StreamFailure.class,
+					failed -> {
+					log().error(failed.getCause(), "Stream failed!");
+					})
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -80,7 +140,26 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// - To split an object, serialize it into a byte array and then send the byte array range-by-range (tip: try "KryoPoolSingleton.get()").
 		// - If you serialize a message manually and send it, it will, of course, be serialized again by Akka's message passing subsystem.
 		// - But: Good, language-dependent serializers (such as kryo) are aware of byte arrays so that their serialization is very effective w.r.t. serialization time and size of serialized data.
-		receiverProxy.tell(new BytesMessage<>(message, sender, receiver), this.self());
+		
+		KryoPool kryo = KryoPoolSingleton.get();
+
+		BytesMessage<?> byteMessage = new BytesMessage<>(message, sender, receiver);
+		byte[] serializedMessage = kryo.toBytesWithClass(byteMessage);
+		
+
+		Source<Byte, NotUsed> messageStream = Source.from(serializedMessage);
+
+		Sink<String, NotUsed> sink =
+			Sink.<Byte>actorRefWithBackpressure(
+				receiver,
+				new StreamInitialized(),
+				Ack.INSTANCE,
+				new StreamCompleted(),
+				ex -> new StreamFailure(ex));
+
+		messageStream.runWith(sink, system);
+
+		//receiverProxy.tell(new BytesMessage<>(message, sender, receiver), this.self());
 	}
 
 	private void handle(BytesMessage<?> message) {
