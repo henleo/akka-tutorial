@@ -50,20 +50,28 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	INSTANCE;
 	}
 
-	static class StreamInitialized {}
+	@Data @NoArgsConstructor @AllArgsConstructor
+	static class StreamInitialized {
+		private static final long serialVersionUID = 1L;
+	}
 
-	static class StreamCompleted {}
+	@Data @NoArgsConstructor @AllArgsConstructor
+	static class StreamCompleted {
+		private static final long serialVersionUID = 1L;
+	}
 
+	@Data @NoArgsConstructor @AllArgsConstructor
 	static class StreamFailure {
-	private final Throwable cause;
+		private static final long serialVersionUID = 1L;
+		private final Throwable cause;
 
-	public StreamFailure(Throwable cause) {
-		this.cause = cause;
-	}
+		public StreamFailure(Throwable cause) {
+			this.cause = cause;
+		}
 
-	public Throwable getCause() {
-		return cause;
-	}
+		public Throwable getCause() {
+			return cause;
+		}
 	}
 
 	/////////////////
