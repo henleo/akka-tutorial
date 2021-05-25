@@ -1,12 +1,20 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
+
+import java.util.Arrays;
+import java.util.List;
 import java.util.ArrayList;
+import de.hpi.ddm.singletons.KryoPoolSingleton;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSelection;
 import akka.actor.Props;
+import akka.stream.*;
+import akka.stream.javadsl.*;
+import akka.NotUsed;
+import akka.actor.ActorSystem;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -24,7 +32,8 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	public LargeMessageProxy(){
-		this.messageReceivedSoFar = new ArrayList<Byte>();
+		this.messageReceivedSoFar = new byte[0];
+		this.frameSize = 1000;
 	}
 
 	////////////////////
@@ -50,20 +59,24 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	INSTANCE;
 	}
 
-	@Data @NoArgsConstructor @AllArgsConstructor
+	@Data @NoArgsConstructor
 	static class StreamInitialized {
 		private static final long serialVersionUID = 1L;
 	}
 
-	@Data @NoArgsConstructor @AllArgsConstructor
+	@Data @NoArgsConstructor
 	static class StreamCompleted {
 		private static final long serialVersionUID = 1L;
 	}
 
-	@Data @NoArgsConstructor @AllArgsConstructor
+	@Data
 	static class StreamFailure {
 		private static final long serialVersionUID = 1L;
 		private final Throwable cause;
+
+		public StreamFailure() {
+			this.cause = null;
+		}
 
 		public StreamFailure(Throwable cause) {
 			this.cause = cause;
@@ -78,7 +91,8 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	// Actor State //
 	/////////////////
 
-	ArrayList<Byte> messageReceivedSoFar;
+	byte[] messageReceivedSoFar;
+	int frameSize;
 	
 	/////////////////////
 	// Actor Lifecycle //
@@ -99,25 +113,25 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 					log().info("Stream initialized");
 					sender().tell(Ack.INSTANCE, self());
 					//TODO: create new datastructure to collect elements in
-					this.messageReceivedSoFar.clear();
+					this.messageReceivedSoFar = new byte[0];
 					})
 				.match(
-					Byte.class,
+					byte[].class,
 					element -> {
 					log().info("Received element: {}", element);
 					sender().tell(Ack.INSTANCE, self());
-					//TODO: put elements back together
-					this.messageReceivedSoFar.add(element);
+					//TODO: append new element to elements received so far
+					byte[] updatedMessage = new byte[this.messageReceivedSoFar.length + element.length];
+					System.arraycopy(this.messageReceivedSoFar, 0, updatedMessage, 0, this.messageReceivedSoFar.length);
+					System.arraycopy(element, 0, updatedMessage, this.messageReceivedSoFar.length, element.length);
+					this.messageReceivedSoFar = updatedMessage;
 					})
 				.match(
 					StreamCompleted.class,
 					completed -> {
 					log().info("Stream completed");
 					//TODO: deserialize message
-					Byte[] completeMessage = new Byte[this.messageReceivedSoFar.size()];
-					completeMessage = this.messageReceivedSoFar.toArray(completeMessage);
-					KryoPool kryo = KryoPoolSingleton.get();
-					BytesMessage<?> deserializedMessage = kryo.fromBytes(completeMessage);
+					BytesMessage<?> deserializedMessage = (BytesMessage<?>) KryoPoolSingleton.get().fromBytes(this.messageReceivedSoFar);
 					//TODO: send to receiver
 					deserializedMessage.getReceiver().tell(deserializedMessage.getBytes(), deserializedMessage.getSender());
 					})
@@ -128,6 +142,35 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 					})
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
+	}
+
+	private void handle(StreamInitialized init) {
+		log().info("Stream initialized");
+		sender().tell(Ack.INSTANCE, self());
+		//TODO: create new datastructure to collect elements in
+		this.messageReceivedSoFar = new byte[0];
+	}
+
+	private void handle(byte[] element) {
+		log().info("Received element: {}", element);
+		sender().tell(Ack.INSTANCE, self());
+		//TODO: append new element to elements received so far
+		byte[] updatedMessage = new byte[this.messageReceivedSoFar.length + element.length];
+		System.arraycopy(this.messageReceivedSoFar, 0, updatedMessage, 0, this.messageReceivedSoFar.length);
+		System.arraycopy(element, 0, updatedMessage, this.messageReceivedSoFar.length, element.length);
+		this.messageReceivedSoFar = updatedMessage;
+	}
+
+	private void handle(StreamCompleted completed) {
+		log().info("Stream completed");
+		//TODO: deserialize message
+		BytesMessage<?> deserializedMessage = (BytesMessage<?>) KryoPoolSingleton.get().fromBytes(this.messageReceivedSoFar);
+		//TODO: send to receiver
+		deserializedMessage.getReceiver().tell(deserializedMessage.getBytes(), deserializedMessage.getSender());
+	}
+
+	private void handle(StreamFailure failed) {
+		log().error(failed.getCause(), "Stream failed!");
 	}
 
 	private void handle(LargeMessage<?> largeMessage) {
@@ -149,16 +192,24 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// - If you serialize a message manually and send it, it will, of course, be serialized again by Akka's message passing subsystem.
 		// - But: Good, language-dependent serializers (such as kryo) are aware of byte arrays so that their serialization is very effective w.r.t. serialization time and size of serialized data.
 		
-		KryoPool kryo = KryoPoolSingleton.get();
-
 		BytesMessage<?> byteMessage = new BytesMessage<>(message, sender, receiver);
-		byte[] serializedMessage = kryo.toBytesWithClass(byteMessage);
+		byte[] serializedMessage = KryoPoolSingleton.get().toBytesWithClass(byteMessage);
 		
+		//TODO: split byte arrau in frames, put frames in list - remember to adjust the reassembling
 
-		Source<Byte, NotUsed> messageStream = Source.from(serializedMessage);
+		ArrayList<byte[]> serializedMessageList = new ArrayList<byte[]>();
+		for(int i = 0; i < (serializedMessage.length + this.frameSize - 1)/this.frameSize; i++){
+			serializedMessageList.add(Arrays.copyOfRange(serializedMessage, i * this.frameSize, ((i+1) * this.frameSize) -1));
+		}
 
-		Sink<String, NotUsed> sink =
-			Sink.<Byte>actorRefWithBackpressure(
+		//TODO: stream serialized message to other proxy
+
+		Source<byte[], NotUsed> messageStream = Source.from(serializedMessageList);
+
+		ActorSystem system = this.getContext().getSystem();
+
+		Sink<byte[], NotUsed> sink =
+			Sink.<byte[]>actorRefWithBackpressure(
 				receiver,
 				new StreamInitialized(),
 				Ack.INSTANCE,
