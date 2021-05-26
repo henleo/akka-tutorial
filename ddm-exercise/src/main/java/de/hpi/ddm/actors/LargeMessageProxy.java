@@ -1,11 +1,10 @@
 package de.hpi.ddm.actors;
 
-import de.hpi.ddm.structures.BytesMessage;
-
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Collections;
 import java.util.ArrayList;
 import java.util.HashMap;
 import de.hpi.ddm.singletons.KryoPoolSingleton;
@@ -36,9 +35,10 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	public LargeMessageProxy(){
 		this.frameSize = 1000;
-		this.nextMessageToBeSentId = 0;
-		this.messagesToBeSent = new HashMap<Long, BytesMessage<?>>();
+		this.nextMessageToBeSentId = (long) 0;
+		this.messagesToBeSent = new HashMap<Long, MessageToBeSent<?>>();
 		this.messagesBeingReceived = new HashMap<ActorRef, byte[]>();
+		this.messagesAnticipated = new HashMap<Long, RequestToSendMessage>();
 	}
 
 	////////////////////
@@ -53,9 +53,26 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
+	public class MessageToBeSent<T> implements Serializable {
+		private static final long serialVersionUID = 1L;
+		public T bytes;
+		public ActorRef sender;
+		public ActorRef receiver;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class BytesMessage implements Serializable {
+		private static final long serialVersionUID = 1L;
+		private Object message;
+		private long messageToBeSentId;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
 	public static class RequestToSendMessage implements Serializable {
 		private static final long serialVersionUID = 1L;
 		private long messageToBeSentId;
+		public ActorRef sender;
+		public ActorRef receiver;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
@@ -108,8 +125,9 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	int frameSize;
 	long nextMessageToBeSentId;
-	HashMap<Long, BytesMessage<?>> messagesToBeSent;
+	HashMap<Long, MessageToBeSent<?>> messagesToBeSent;
 	HashMap<ActorRef, byte[]> messagesBeingReceived;
+	HashMap<Long, RequestToSendMessage> messagesAnticipated;
 	
 	/////////////////////
 	// Actor Lifecycle //
@@ -137,30 +155,36 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	private void handle(StreamInitialized init) {
 		log().info("Stream initialized");
-		sender().tell(Ack.INSTANCE, self());
+		this.sender().tell(Ack.INSTANCE, self());
 		// create new datastructure to collect elements in
-		this.messagesBeingReceived.put(sender(), new byte[0]);
+		this.messagesBeingReceived.put(this.sender(), new byte[0]);
 	}
 
 	private void handle(byte[] element) {
-		log().info("Received element: {}", element);
-		sender().tell(Ack.INSTANCE, self());
+		//log().info("Received element: {}", element);
+		this.sender().tell(Ack.INSTANCE, self());
 		// append new element to elements received so far
-		byte[] messageReceivedSoFar = this.messagesBeingReceived.get(sender());
+		byte[] messageReceivedSoFar = this.messagesBeingReceived.get(this.sender());
 		byte[] updatedMessage = new byte[messageReceivedSoFar.length + element.length];
 		System.arraycopy(messageReceivedSoFar, 0, updatedMessage, 0, messageReceivedSoFar.length);
 		System.arraycopy(element, 0, updatedMessage, messageReceivedSoFar.length, element.length);
-		this.messagesBeingReceived.put(sender(), updatedMessage);
+		this.messagesBeingReceived.put(this.sender(), updatedMessage);
 	}
 
 	private void handle(StreamCompleted completed) {
 		log().info("Stream completed");
 		// deserialize message
-		byte[] serializedMessage = this.messagesBeingReceived.get(sender());
-		BytesMessage<?> deserializedMessage = (BytesMessage<?>) KryoPoolSingleton.get().fromBytes(serializedMessage);
-		this.messagesBeingReceived.remove(sender());
+		byte[] serializedMessage = this.messagesBeingReceived.get(this.sender());
+		log().info("right before deserialization");
+		BytesMessage deserializedMessage = (BytesMessage)KryoPoolSingleton.get().fromBytes(serializedMessage);
+		log().info("right after deserialization");
+		this.messagesBeingReceived.remove(this.sender());
 		// send to receiver
-		deserializedMessage.getReceiver().tell(deserializedMessage.getBytes(), deserializedMessage.getSender());
+		long messageToBeSentId = deserializedMessage.getMessageToBeSentId();
+		RequestToSendMessage request = this.messagesAnticipated.get(messageToBeSentId);
+		ActorRef sender = request.getSender();
+		ActorRef receiver = request.getReceiver();
+		receiver.tell(deserializedMessage.getMessage(), sender);
 	}
 
 	private void handle(StreamFailure failed) {
@@ -168,15 +192,18 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	private void handle(RequestToSendMessage request) {
-		sender().tell(new AckToSendMessage(request.messageToBeSentId), this.self());
+		this.messagesAnticipated.put(request.getMessageToBeSentId(), request);
+		this.sender().tell(new AckToSendMessage(request.messageToBeSentId), this.self());
 	}
 
 	private void handle(TimeoutMessage timeout) {
 		if (this.messagesToBeSent.containsKey(timeout.messageToBeSentId)) {
 			// send new RequestToSendMessage to other proxy
-			ActorRef receiver = this.messagesToBeSent.get(timeout.messageToBeSentId).getReceiver();
+			MessageToBeSent<?> message = this.messagesToBeSent.get(timeout.messageToBeSentId);
+			ActorRef receiver = message.getReceiver();
+			ActorRef sender = message.getSender();
 			ActorSelection receiverProxy = this.context().actorSelection(receiver.path().child(DEFAULT_NAME));
-			receiverProxy.tell(new RequestToSendMessage(timeout.messageToBeSentId), this.self());
+			receiverProxy.tell(new RequestToSendMessage(timeout.messageToBeSentId, sender, receiver), this.self());
 
 			// schedule new timeout to self
 			TimeoutMessage timeoutMessage = new TimeoutMessage(timeout.messageToBeSentId);
@@ -189,23 +216,27 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 			// get acknowledged message 
 			log().info("handling ack message, not serialized yet");
-			BytesMessage<?> byteMessage = this.messagesToBeSent.get(ack.messageToBeSentId);
+			MessageToBeSent<?> message = this.messagesToBeSent.get(ack.messageToBeSentId);
+			BytesMessage bytesMessage = new BytesMessage(message.getBytes(), ack.messageToBeSentId);
 			log().info("right before serializing");
-			byte[] serializedMessage = KryoPoolSingleton.get().toBytesWithClass(byteMessage);
+			byte[] serializedMessage = KryoPoolSingleton.get().toBytesWithClass(bytesMessage);
 			log().info("handling ack message, bytemessage serialized");
+			BytesMessage deserializedMessage = (BytesMessage)KryoPoolSingleton.get().fromBytes(serializedMessage);
+			log().info((String)deserializedMessage.getMessage());
 
 			// split byte array of the serialized message in frames of fixed size and put them into an arraylist 
 			ArrayList<byte[]> serializedMessageList = new ArrayList<byte[]>();
 			int numberOfFramesNeeded = (serializedMessage.length + this.frameSize - 1)/this.frameSize;
 			for(int i = 0; i < numberOfFramesNeeded; i++){
 				if(i < numberOfFramesNeeded - 1) {
-					serializedMessageList.add(Arrays.copyOfRange(serializedMessage, i * this.frameSize, ((i+1) * this.frameSize) - 1));
+					serializedMessageList.add(Arrays.copyOfRange(serializedMessage, i * this.frameSize, (i+1) * this.frameSize));
 				}
 				else {
 					// last frame might be shorter than framSize
-					serializedMessageList.add(Arrays.copyOfRange(serializedMessage, i * this.frameSize, serializedMessage.length - 1));
+					serializedMessageList.add(Arrays.copyOfRange(serializedMessage, i * this.frameSize, serializedMessage.length));
 				}
 			}
+			//Collections.reverse(serializedMessageList);
 
 			// stream serialized message to other proxy (sender of this acknowledgement)
 
@@ -215,7 +246,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 			Sink<byte[], NotUsed> sink =
 				Sink.<byte[]>actorRefWithBackpressure(
-					sender(),
+					this.sender(),
 					new StreamInitialized(),
 					Ack.INSTANCE,
 					new StreamCompleted(),
@@ -247,11 +278,11 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 		// - If you serialize a message manually and send it, it will, of course, be serialized again by Akka's message passing subsystem.
 		// - But: Good, language-dependent serializers (such as kryo) are aware of byte arrays so that their serialization is very effective w.r.t. serialization time and size of serialized data.
 		
-		BytesMessage<?> byteMessage = new BytesMessage<>(message, sender, receiver);
+		MessageToBeSent<?> messageToBeSent = new MessageToBeSent(message, sender, receiver);
 		
 		// store serialized message in messagesToBeSent, send request to other proxy 
-		this.messagesToBeSent.put(this.nextMessageToBeSentId, byteMessage);
-		receiverProxy.tell(new RequestToSendMessage(this.nextMessageToBeSentId), this.self());
+		this.messagesToBeSent.put(this.nextMessageToBeSentId, messageToBeSent);
+		receiverProxy.tell(new RequestToSendMessage(this.nextMessageToBeSentId, sender, receiver), this.self());
 
 		// schedule cancellable timeout to self
 		TimeoutMessage timeoutMessage = new TimeoutMessage(this.nextMessageToBeSentId);
