@@ -95,7 +95,7 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(StartMessage message) {
 		this.startTime = System.currentTimeMillis();
 		
-		//this.reader.tell(new Reader.ReadMessage(), this.self());
+		this.reader.tell(new Reader.ReadMessage(), this.self());
 	}
 	
 	protected void handle(BatchMessage message) {

@@ -34,7 +34,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	public LargeMessageProxy(){
-		this.frameSize = 2000000;
+		this.frameSize = 500000;
 		this.nextMessageToBeSentId = (long) 0;
 		this.messagesToBeSent = new HashMap<Long, MessageToBeSent<?>>();
 		this.messagesBeingReceived = new HashMap<ActorRef, byte[]>();
