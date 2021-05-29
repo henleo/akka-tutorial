@@ -45,6 +45,7 @@ public class Worker extends AbstractLoggingActor {
 		this.foundResult = false;
 		this.result = new String();
 		this.hashedResult = new String();
+		this.iterations = (long) 0;
 	}
 	
 	////////////////////
@@ -85,6 +86,8 @@ public class Worker extends AbstractLoggingActor {
 	private boolean foundResult;
 	private String result;
 	private String hashedResult;
+
+	private long iterations;
 	
 	/////////////////////
 	// Actor Lifecycle //
@@ -173,7 +176,7 @@ public class Worker extends AbstractLoggingActor {
 	// Generating all permutations of an array using Heap's Algorithm
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	// a: character set, size: length of permutations, n: length of character set (not used?)
+	// a: character set, size: size of character set, n: length of permutation (for truncating result)
 	private void heapPermutation(char[] a, int size, int n/*, List<String> l*/) {
 		// If size is 1, store the obtained permutation
 		if(this.foundResult){
@@ -182,11 +185,12 @@ public class Worker extends AbstractLoggingActor {
 
 		if (size == 1) {
 			//l.add(new String(a));
-
-			if(this.hash(new String(a)).equals(this.hashedResult)) {
+			String permutation = new String(a);
+			permutation = permutation.substring(0, n);
+			this.iterations++;
+			if(this.hash(permutation).equals(this.hashedResult)) {
 				this.foundResult = true;
-				this.result = new String(a);
-				this.log().error("handling WorkPackageMessage: result found in heap: " + new String(a));
+				this.result = permutation;
 			}
 		} else {
 			for (int i = 0; i < size; i++) {
@@ -261,13 +265,15 @@ public class Worker extends AbstractLoggingActor {
 		}
 		List<Character> characterSetList = new ArrayList<>(characterSet);
 		char[] characterSetArray = characterSetList.stream().map(Object::toString).collect(Collectors.joining()).toCharArray();
+		this.iterations = (long) 0;
 		if(isPassword) {
 			this.getAllKLengthRec(characterSetArray, new String(), characterSetArray.length, message.getPwLength());
 		} else {
-			this.heapPermutation(characterSetArray, message.getPwLength(), message.getCharacterSet().size() - 1);
+			this.heapPermutation(characterSetArray, message.getCharacterSet().size(), message.getCharacterSet().size() - 1);
 		}
-		this.log().error("handling WorkPackageMessage: result found: " + this.result);
+		//this.log().error("handling WorkPackageMessage: result found: " + this.result + " iterations: " + String.valueOf(this.iterations) + " pwId: " + String.valueOf(message.getWorkPackage().getPwId()) + " packageId: " + String.valueOf(message.getWorkPackage().getPackageInsidePwId()));
 		Master.ResultMessage resultMessage = new Master.ResultMessage(this.result, message.getWorkPackage().getPwId(), message.getWorkPackage().getPackageInsidePwId(), isPassword);
-		this.sender().tell(resultMessage, this.self());
+		//this.sender().tell(resultMessage, this.self());
+		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(resultMessage, this.sender()), this.self());
 	}
 }

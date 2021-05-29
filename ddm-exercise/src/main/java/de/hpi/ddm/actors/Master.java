@@ -104,6 +104,13 @@ public class Master extends AbstractLoggingActor {
 		public final long pwId;
 		public final int packageInsidePwId;
 		public final boolean isPassword;
+
+		public WorkPackage() {
+			this.work = new String();
+			this.pwId = (long) 0;
+			this.packageInsidePwId = 0;
+			this.isPassword = false;
+		}
 	}
 	
 	/////////////////
@@ -202,7 +209,7 @@ public class Master extends AbstractLoggingActor {
 
 		// TODO: Process the lines with the help of the worker actors
 		for (String[] line : message.getLines()) {
-			this.log().error("Need help processing: {}", Arrays.toString(line));
+			//this.log().error("Need help processing: {}", Arrays.toString(line));
 			//store as workpackages in assignment queue and in waiting queue and as pwsworkingon entries
 			long passwordId = Long.valueOf(line[0]);
 
@@ -216,9 +223,9 @@ public class Master extends AbstractLoggingActor {
 			this.pwPackagesWaitingForHints.put(passwordId, pwPackage);
 
 			// create work packages for hints, put in waiting for assignment queue
-			for(int i = 5; i < this.numberOfHints; i++) {
+			for(int i = 5; i < this.numberOfHints + 5; i++) {
 				String hashedHint = line[i];
-				WorkPackage hintPackage = new WorkPackage(hashedHint, passwordId, i, false);
+				WorkPackage hintPackage = new WorkPackage(hashedHint, passwordId, i-4, false);
 				this.packagesToBeAssigned.add(hintPackage);
 			}
 		}
@@ -227,7 +234,7 @@ public class Master extends AbstractLoggingActor {
 			ActorRef worker = this.freeWorkers.remove();
 			this.assignPackageFromQueue(worker);
 		}
-		this.log().error("made it through all package assigns of first batch");
+		//this.log().error("made it through all package assigns of first batch");
 	}
 
 	private void requestNewBatch() {
@@ -250,8 +257,10 @@ public class Master extends AbstractLoggingActor {
 				Set<Character> hints = new HashSet<Character>(hintList);
 				Worker.WorkPackageMessage message = new Worker.WorkPackageMessage(workPackage, this.characterSet, this.pwLength, hints);
 				// assign package
-				worker.tell(message, this.self());
+				//worker.tell(message, this.self());
+				this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(message, worker), this.self());
 				this.assignedPackages.put(worker, workPackage);
+
 			}
 		} else {
 			if(!this.freeWorkers.contains(worker)) {
@@ -280,7 +289,7 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(RegistrationMessage message) {
 		this.context().watch(this.sender());
 		this.workers.add(this.sender());
-		this.log().info("Registered {}", this.sender());
+		//this.log().info("Registered {}", this.sender());
 		
 		this.largeMessageProxy.tell(new LargeMessageProxy.LargeMessage<>(new Worker.WelcomeMessage(this.welcomeData), this.sender()), this.self());
 		
@@ -303,7 +312,7 @@ public class Master extends AbstractLoggingActor {
 			String resultString = "ID: " + String.valueOf(message.getPwId()) + " Name: " + entry.name + " Password: " + message.getResult();
 			this.collector.tell(new Collector.CollectMessage(resultString), this.self());
 
-			this.pwsCurrentlyWorkingOn.remove(entry);
+			this.pwsCurrentlyWorkingOn.remove(passwordId);
 
 			if(this.reachedEOF && this.packagesToBeAssigned.isEmpty() && this.pwPackagesWaitingForHints.isEmpty() && this.pwsCurrentlyWorkingOn.isEmpty() && this.assignedPackages.isEmpty()) {
 				this.terminate();
@@ -337,9 +346,12 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
-		this.log().info("Unregistered {}", message.getActor());
+		//this.log().info("Unregistered {}", message.getActor());
 		//if worker was working on package, put that package in the front of waiting to be assigned queue 
 		//and remove relevant entry from assignedPackages
+		if(this.freeWorkers.contains(message.getActor())) {
+			this.freeWorkers.remove(message.getActor());
+		}
 		if(this.assignedPackages.containsKey(message.getActor())) {
 			WorkPackage workPackage = this.assignedPackages.remove(message.getActor());
 			this.packagesToBeAssigned.addFirst(workPackage);
