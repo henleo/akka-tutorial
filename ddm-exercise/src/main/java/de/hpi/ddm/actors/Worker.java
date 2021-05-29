@@ -186,6 +186,7 @@ public class Worker extends AbstractLoggingActor {
 			if(this.hash(new String(a)).equals(this.hashedResult)) {
 				this.foundResult = true;
 				this.result = new String(a);
+				this.log().error("handling WorkPackageMessage: result found in heap: " + new String(a));
 			}
 		} else {
 			for (int i = 0; i < size; i++) {
@@ -221,7 +222,7 @@ public class Worker extends AbstractLoggingActor {
 			//System.out.println(prefix);
 			if(this.hash(prefix).equals(hashedResult)) {
 				this.foundResult = true;
-				this.result = new String(prefix);
+				this.result = prefix;
 			}
 			return;
 		}
