@@ -314,7 +314,7 @@ public class Master extends AbstractLoggingActor {
 
 			this.pwsCurrentlyWorkingOn.remove(passwordId);
 
-			if(this.reachedEOF && this.packagesToBeAssigned.isEmpty() && this.pwPackagesWaitingForHints.isEmpty() && this.pwsCurrentlyWorkingOn.isEmpty() && this.assignedPackages.isEmpty()) {
+			if(this.reachedEOF && this.packagesToBeAssigned.isEmpty() && this.pwPackagesWaitingForHints.isEmpty() && this.pwsCurrentlyWorkingOn.isEmpty() /*&& this.assignedPackages.isEmpty()*/) {
 				this.terminate();
 			} else {
 				this.assignPackageFromQueue(this.sender());
