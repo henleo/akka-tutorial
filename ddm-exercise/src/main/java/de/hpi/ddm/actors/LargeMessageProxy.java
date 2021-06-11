@@ -155,34 +155,33 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	private void handle(StreamInitialized init) {
 		//log().info("Stream initialized");
-		this.sender().tell(Ack.INSTANCE, self());
 		// create new datastructure to collect elements in
 		this.messagesBeingReceived.put(this.sender(), new byte[0]);
 		//log().info("done handling Stream initialized");
+		this.sender().tell(Ack.INSTANCE, self());
 	}
 
 	private void handle(byte[] element) {
 		//log().info("Received element: {}", element);
-		this.sender().tell(Ack.INSTANCE, self());
 		// append new element to elements received so far
 		byte[] messageReceivedSoFar = this.messagesBeingReceived.get(this.sender());
 		byte[] updatedMessage = new byte[messageReceivedSoFar.length + element.length];
 		System.arraycopy(messageReceivedSoFar, 0, updatedMessage, 0, messageReceivedSoFar.length);
 		System.arraycopy(element, 0, updatedMessage, messageReceivedSoFar.length, element.length);
 		this.messagesBeingReceived.put(this.sender(), updatedMessage);
+		this.sender().tell(Ack.INSTANCE, self());
 	}
 
 	private void handle(StreamCompleted completed) {
 		//log().info("Stream completed");
 		// deserialize message
-		byte[] serializedMessage = this.messagesBeingReceived.get(this.sender());
+		byte[] serializedMessage = this.messagesBeingReceived.remove(this.sender());
 		//log().info("right before deserialization");
 		BytesMessage deserializedMessage = (BytesMessage)KryoPoolSingleton.get().fromBytes(serializedMessage);
 		//log().info("right after deserialization");
-		this.messagesBeingReceived.remove(this.sender());
 		// send to receiver
 		long messageToBeSentId = deserializedMessage.getMessageToBeSentId();
-		RequestToSendMessage request = this.messagesAnticipated.get(messageToBeSentId);
+		RequestToSendMessage request = this.messagesAnticipated.remove(messageToBeSentId);
 		ActorRef sender = request.getSender();
 		ActorRef receiver = request.getReceiver();
 		receiver.tell(deserializedMessage.getMessage(), sender);
@@ -195,7 +194,7 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 
 	private void handle(RequestToSendMessage request) {
 		this.messagesAnticipated.put(request.getMessageToBeSentId(), request);
-		this.sender().tell(new AckToSendMessage(request.messageToBeSentId), this.self());
+		this.sender().tell(new AckToSendMessage(request.getMessageToBeSentId()), this.self());
 	}
 
 	private void handle(TimeoutMessage timeout) {
@@ -215,12 +214,12 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 	}
 
 	private void handle(AckToSendMessage ack) {
-		if(this.messagesToBeSent.containsKey(ack.messageToBeSentId)) {
+		if(this.messagesToBeSent.containsKey(ack.getMessageToBeSentId())) {
 
 			// get acknowledged message 
 			//log().info("handling ack message, not serialized yet");
-			MessageToBeSent<?> message = this.messagesToBeSent.get(ack.messageToBeSentId);
-			BytesMessage bytesMessage = new BytesMessage(message.getBytes(), ack.messageToBeSentId);
+			MessageToBeSent<?> message = this.messagesToBeSent.remove(ack.getMessageToBeSentId());
+			BytesMessage bytesMessage = new BytesMessage(message.getBytes(), ack.getMessageToBeSentId());
 			//log().info("right before serializing");
 			byte[] serializedMessage = KryoPoolSingleton.get().toBytesWithClass(bytesMessage);
 			//log().info("handling ack message, bytemessage serialized");
@@ -255,9 +254,6 @@ public class LargeMessageProxy extends AbstractLoggingActor {
 					ex -> new StreamFailure(ex));
 
 			messageStream.runWith(sink, system);
-
-			// delete from messagesToBeSent
-			this.messagesToBeSent.remove(ack.messageToBeSentId);
 			//log().info("done handling ack message");
 		}
 	}
