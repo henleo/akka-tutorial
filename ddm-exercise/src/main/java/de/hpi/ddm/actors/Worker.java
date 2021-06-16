@@ -223,6 +223,7 @@ public class Worker extends AbstractLoggingActor {
 		// print prefix
 		if (k == 0)
 		{
+			this.iterations++;
 			//System.out.println(prefix);
 			if(this.hash(prefix).equals(hashedResult)) {
 				this.foundResult = true;
@@ -247,6 +248,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(WorkPackageMessage message) {
+		//this.log().error("start handling WorkPackageMessage: " + "pwId: " + String.valueOf(message.getWorkPackage().getPwId()) + " packageId: " + String.valueOf(message.getWorkPackage().getPackageInsidePwId()));
 		this.foundResult = false;
 		this.result = new String();
 		this.hashedResult = message.getWorkPackage().getWork();
